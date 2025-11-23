@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KARA - Child Protection System</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+  <div id="root"></div>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+
+  <script type="text/babel">
+  const ABUSE_INDICATORS = {
+    neglect: {
+      low:      ["delay", "ignore", "late", "forget", "miss"],
+      medium:   ["overlook", "omit", "neglect", "fail to provide"],
+      high:     ["deny care", "deny food", "deny safety", "withhold", "refuse treatment"],
+      critical: ["abandon", "endanger", "leave alone", "desert"]
+    },
+    abuse: {
+      low:      ["push", "grab", "poke", "shove", "slap"],
+      medium:   ["hit", "strike", "kick", "pull hair", "pinch", "spank hard"],
+      high:     ["punch", "choke", "beat", "whip", "throw", "slam"],
+      critical: ["assault", "stab", "strangle", "burn", "bludgeon", "rape", "sexual abuse"]
+    }
+  };
+
+  // Hàm mới tính điểm và trả về mức độ theo quy tắc bạn yêu cầu
+  function detectAbuseLevel(content) {
+    const text = content.trim().toLowerCase();
+
+    // Đếm số từ khóa ở mỗi cấp độ
+    let count = { low: 0, medium: 0, high: 0, critical: 0 };
+    let foundKeywords = { low: [], medium: [], high: [], critical: [] };
+    let detectedType = "none";
+
+    // Duyệt tất cả các từ khóa
+    const check = (list, level) => {
+      list.forEach(word => {
+        const w = word.toLowerCase();
+        if (text.includes(w)) {
+          count[level]++;
+          foundKeywords[level].push(word);
+          if (detectedType === "none") detectedType = level === "critical" || level === "high" || level === "medium" ? "abuse" : "neglect";
+        }
+      });
+    };
+
+    Object.values(ABUSE_INDICATORS.neglect).forEach((arr, i) => {
+      const levels = ["low","medium","high","critical"];
+      check(arr, levels[i]);
+    });
+    Object.values(ABUSE_INDICATORS.abuse).forEach((arr, i) => {
+      const levels = ["low","medium","high","critical"];
+      check(arr, levels[i]);
+    });
+
+    // 1. Nếu có bất kỳ từ khóa critical → luôn Critical
+    if (count.critical > 0) {
+      return {
+        level: "critical",
+        type: detectedType === "none" ? "neglect" : detectedType,
+        keywords: foundKeywords.critical,
+        reason: `Critical ${detectedType === "neglect" ? "neglect" : "abuse"} detected (${count.critical} critical keyword(s))`
+      };
+    }
+
+    // 2. Quy tắc nâng cấp theo số lượng
+    if (count.high >= 2) {
+      return {
+        level: "critical",
+        type: "abuse",
+        keywords: foundKeywords.high,
+        reason: `2+ high-level keywords → escalated to Critical`
+      };
+    }
+    if (count.medium >= 3) {
+      return {
+        level: "high",
+        type: detectedType,
+        keywords: foundKeywords.medium,
+        reason: `3+ medium-level keywords → escalated to High`
+      };
+    }
+    if (count.low >= 4) {
+      return {
+        level: "medium",
+        type: detectedType,
+        keywords: foundKeywords.low,
+        reason: `4+ low-level keywords → escalated to Medium`
+      };
+    }
+
+    // 3. Nếu không đạt ngưỡng nâng cấp → trả về mức độ cao nhất thực tế có
+    if (count.high > 0)    return { level: "high",    type: "abuse",   keywords: foundKeywords.high,    reason: "High-risk keywords detected" };
+    if (count.medium > 0)  return { level: "medium",  type: detectedType, keywords: foundKeywords.medium, reason: "Medium-risk keywords detected" };
+    if (count.low > 0)     return { level: "low",     type: detectedType, keywords: foundKeywords.low,    reason: "Low-risk keywords detected" };
+
+    return { level: "low", type: "none", keywords: [], reason: "No signs detected" };
+  }
+
+
+    const USERS = [{ username: "admin", role: "admin" }, { username: "user", role: "user" }, { username: "organization", role: "organization" }];
+    const DEMO_PASSWORD = "123";
+
+    const calculateAge = (dob) => {
+      if (!dob) return null;
+      const birth = new Date(dob);
+      const today = new Date();
+      let age = today.getFullYear() - birth.getFullYear();
+      const m = today.getMonth() - birth.getMonth();
+      if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
+      return age >= 0 ? age : null;
+    };
+
+    const formatDateUS = (dateStr) => {
+      if (!dateStr) return "-";
+      const d = new Date(dateStr);
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const year = d.getFullYear();
+      return `${month}/${day}/${year}`;
+    };
+
+    function App() {
+      // LẤY DỮ LIỆU TỪ localStorage KHI MỞ TRANG
+      const savedCases = JSON.parse(localStorage.getItem("kara_cases") || "[]");
+      const savedUser = JSON.parse(localStorage.getItem("kara_current_user") || "null");
+
+      const [user, setUser] = React.useState(savedUser);
+      const [cases, setCases] = React.useState(savedCases);
+
+      const [username, setUsername] = React.useState("");
+      const [password, setPassword] = React.useState("");
+      const [loginErr, setLoginErr] = React.useState("");
+
+      const [caseType, setCaseType] = React.useState("case_note");
+      const [childName, setChildName] = React.useState("");
+      const [childDOB, setChildDOB] = React.useState("");
+      const [childGender, setChildGender] = React.useState("male");
+      const [region, setRegion] = React.useState("Northern");
+      const [origin, setOrigin] = React.useState("Rural");
+      const [content, setContent] = React.useState("");
+      const [editingId, setEditingId] = React.useState(null);
+
+      // FILTER & SORT STATES
+      const [search, setSearch] = React.useState("");
+      const [filterLevel, setFilterLevel] = React.useState("all");
+      const [filterType, setFilterType] = React.useState("all");
+      const [filterRegion, setFilterRegion] = React.useState("all");
+      const [filterOrigin, setFilterOrigin] = React.useState("all");
+      const [filterAgeMin, setFilterAgeMin] = React.useState("");
+      const [filterAgeMax, setFilterAgeMax] = React.useState("");
+      const [sortColumn, setSortColumn] = React.useState("date");
+      const [sortOrder, setSortOrder] = React.useState("desc");
+
+      // TỰ ĐỘNG LƯU CASES VÀO localStorage MỖI KHI THAY ĐỔI
+      React.useEffect(() => {
+        localStorage.setItem("kara_cases", JSON.stringify(cases));
+      }, [cases]);
+
+      // TỰ ĐỘNG LƯU USER ĐANG ĐĂNG NHẬP
+      React.useEffect(() => {
+        localStorage.setItem("kara_current_user", JSON.stringify(user));
+      }, [user]);
+
+      // Login
+      const handleLogin = (e) => {
+        e.preventDefault();
+        const found = USERS.find(u => u.username === username && password === DEMO_PASSWORD);
+        if (found) {
+          setUser(found);
+          setLoginErr("");
+          setUsername("");
+          setPassword("");
+        } else {
+          setLoginErr("Incorrect username or password");
+        }
+      };
+
+      // Logout
+      const handleLogout = () => {
+        setUser(null);
+        localStorage.removeItem("kara_current_user");
+      };
+
+      // Auto-fill for organization
+      React.useEffect(() => {
+        if (user?.role === "organization" && (caseType === "school_report" || caseType === "medical_document") && childName && childDOB && childGender) {
+          const age = calculateAge(childDOB);
+          if (age !== null) {
+            const match = cases
+              .filter(c => c.childName.toLowerCase() === childName.trim().toLowerCase() && c.childAge === age && c.childGender === childGender)
+              .sort((a,b) => b.id - a.id)[0];
+            if (match) {
+              setRegion(match.region);
+              setOrigin(match.origin);
+              setContent(match.content);
+            }
+          }
+        }
+      }, [caseType, childName, childDOB, childGender, user, cases]);
+
+      // Submit / Update
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!childName.trim() || !childDOB || !content.trim()) return alert("Please fill in all required fields");
+
+        const age = calculateAge(childDOB);
+        if (age === null) return alert("Invalid date of birth");
+
+        const detection = detectAbuseLevel(content);
+
+        const newCase = {
+          id: editingId || Date.now(),
+          type: caseType,
+          childName: childName.trim(),
+          childAge: age,
+          childDOB,
+          childGender,
+          region,
+          origin,
+          content: content.trim(),
+          extracted: detection.reason,
+          date: new Date().toISOString().slice(0,10),
+          prediction: detection.level,
+          abuseType: detection.type,
+          keywords: detection.keywords,
+          createdBy: editingId ? cases.find(c => c.id === editingId).createdBy : user.role,
+          notified: detection.level === "critical"
+        };
+
+        if (editingId) {
+          setCases(prev => prev.map(c => c.id === editingId ? newCase : c));
+          alert("Updated successfully!");
+        } else {
+          setCases(prev => [newCase, ...prev]);
+          alert("Added successfully!");
+        }
+
+        setChildName(""); setChildDOB(""); setContent(""); setEditingId(null);
+      };
+
+      const handleEdit = (c) => {
+        if (user.role === "user") return alert("You do not have permission to edit");
+        setEditingId(c.id);
+        setCaseType(c.type);
+        setChildName(c.childName);
+        setChildDOB(c.childDOB);
+        setChildGender(c.childGender);
+        setRegion(c.region);
+        setOrigin(c.origin);
+        setContent(c.content);
+      };
+
+      const handleDelete = (id) => {
+        if (user.role === "user") return alert("You do not have permission to delete");
+        if (confirm("Delete this case permanently?")) {
+          setCases(prev => prev.filter(c => c.id !== id));
+        }
+      };
+
+      // Statistics
+      const stats = React.useMemo(() => {
+        const list = user?.role === "organization" ? cases : cases.filter(c => c.createdBy !== "organization");
+        const total = list.length;
+        const critical = list.filter(c => c.prediction === "critical").length;
+        const high = list.filter(c => c.prediction === "high").length;
+        const medium = list.filter(c => c.prediction === "medium").length;
+        const low = list.filter(c => c.prediction === "low").length;
+        const hasAlert = list.some(c => c.notified);
+
+        const gender = { male: 0, female: 0, other: 0 };
+        const regionCount = { Northern: 0, Central: 0, Southern: 0 };
+        const originCount = { Rural: 0, Urban: 0 };
+        const dates = {};
+
+        list.forEach(c => {
+          gender[c.childGender]++;
+          regionCount[c.region]++;
+          originCount[c.origin]++;
+          dates[c.date] = (dates[c.date] || 0) + 1;
+        });
+
+        return { total, critical, high, medium, low, hasAlert, gender, regionCount, originCount, dates };
+      }, [cases, user]);
+
+      // Charts (giữ nguyên)
+      const chartRefs = { gender: React.useRef(null), region: React.useRef(null), origin: React.useRef(null), trend: React.useRef(null) };
+      React.useEffect(() => {
+        if (!window.Chart) return;
+        const charts = {};
+        const createPie = (ctx, labels, data, title) => new Chart(ctx, {
+          type: "doughnut",
+          data: { labels, datasets: [{ data, backgroundColor: ["#3B82F6", "#EC4899", "#6B7280"] }] },
+          options: { responsive: true, plugins: { legend: { position: "bottom" }, title: { display: true, text: title } } }
+        });
+        if (chartRefs.gender.current) charts.gender = createPie(chartRefs.gender.current, ["Male", "Female", "Other"], Object.values(stats.gender), "Gender Distribution");
+        if (chartRefs.region.current) charts.region = createPie(chartRefs.region.current, ["Northern", "Central", "Southern"], Object.values(stats.regionCount), "Regional Distribution");
+        if (chartRefs.origin.current) charts.origin = createPie(chartRefs.origin.current, ["Rural", "Urban"], Object.values(stats.originCount), "Origin");
+        if (chartRefs.trend.current && Object.keys(stats.dates).length > 0) {
+          const sorted = Object.keys(stats.dates).sort();
+          charts.trend = new Chart(chartRefs.trend.current, {
+            type: "line",
+            data: { labels: sorted, datasets: [{ label: "Cases", data: sorted.map(d => stats.dates[d]), borderColor: "#EF4444", tension: 0.3 }] },
+            options: { responsive: true, plugins: { title: { display: true, text: "Trend Over Time" } } }
+          });
+        }
+        return () => Object.values(charts).forEach(c => c?.destroy());
+      }, [stats]);
+
+      // FILTERED & SORTED CASES
+      const filteredAndSortedCases = React.useMemo(() => {
+        let list = user?.role === "organization" ? cases : cases.filter(c => c.createdBy !== "organization");
+
+        if (search) {
+          const s = search.toLowerCase();
+          list = list.filter(c =>
+            c.childName.toLowerCase().includes(s) ||
+            c.content.toLowerCase().includes(s) ||
+            c.extracted.toLowerCase().includes(s)
+          );
+        }
+
+        if (filterLevel !== "all") list = list.filter(c => c.prediction === filterLevel);
+        if (filterType !== "all") list = list.filter(c => c.abuseType === filterType);
+        if (filterRegion !== "all") list = list.filter(c => c.region === filterRegion);
+        if (filterOrigin !== "all") list = list.filter(c => c.origin === filterOrigin);
+        if (filterAgeMin !== "" || filterAgeMax !== "") {
+          const min = filterAgeMin === "" ? -Infinity : Number(filterAgeMin);
+          const max = filterAgeMax === "" ? Infinity : Number(filterAgeMax);
+          list = list.filter(c => c.childAge >= min && c.childAge <= max);
+        }
+
+        const order = sortOrder === "asc" ? 1 : -1;
+        list.sort((a, b) => {
+          switch (sortColumn) {
+            case "name": return order * a.childName.localeCompare(b.childName);
+            case "dob": return order * (new Date(a.childDOB) - new Date(b.childDOB));
+            case "age": return order * (a.childAge - b.childAge);
+            case "level":
+              const levelOrder = { low: 0, medium: 1, high: 2, critical: 3 };
+              return order * (levelOrder[b.prediction] - levelOrder[a.prediction]);
+            case "date":
+            default: return order * (b.date.localeCompare(a.date));
+          }
+        });
+
+        return list;
+      }, [cases, user, search, filterLevel, filterType, filterRegion, filterOrigin, filterAgeMin, filterAgeMax, sortColumn, sortOrder]);
+
+      const toggleSort = (column) => {
+        if (sortColumn === column) {
+          setSortOrder(prev => prev === "asc" ? "desc" : "asc");
+        } else {
+          setSortColumn(column);
+          setSortOrder("desc");
+        }
+      };
+
+      return (
+        <div className="min-h-screen bg-gray-50">
+          {!user ? (
+            <div className="min-h-screen flex items-center justify-center">
+              <div className="bg-white p-10 rounded-xl shadow-xl w-96">
+                <h2 className="text-3xl font-bold text-center text-blue-700 mb-8">KARA Child Protection</h2>
+                <form onSubmit={handleLogin}>
+                  <input className="w-full p-3 border rounded-lg mb-4" placeholder="Username" value={username} onChange={e=>setUsername(e.target.value)} required />
+                  <input className="w-full p-3 border rounded-lg mb-6" type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} required />
+                  <button className="w-full bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 font-semibold">Login</button>
+                </form>
+                {loginErr && <p className="text-red-600 text-center mt-4 font-bold">{loginErr}</p>}
+                <div className="mt-6 text-sm text-gray-600 text-center">
+                  Demo accounts: <b>admin</b>, <b>user</b>, <b>organization</b> — Password: <b>123</b>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
+              <header className="bg-blue-700 text-white p-4 shadow-lg">
+                <div className="max-w-7xl mx-auto flex justify-between items-center">
+                  <h1 className="text-2xl font-bold">Child Abuse Detection & Alert System</h1>
+                  <div className="flex items-center gap-4">
+                    <span>Hello <b>{user.username}</b> ({user.role})</span>
+                    <button onClick={handleLogout} className="bg-blue-800 px-4 py-2 rounded hover:bg-blue-900">Logout</button>
+                  </div>
+                </div>
+              </header>
+
+              {/* Phần còn lại giữ nguyên như trước... */}
+              {/* (Form, Stats, Table - giống hệt phiên bản trước) */}
+              {/* Để ngắn gọn, mình giữ nguyên phần giao diện cũ, chỉ thay đổi logic lưu trữ */}
+
+              <div className="max-w-7xl mx-auto p-6 grid lg:grid-cols-2 gap-8">
+                {/* Form */}
+                <div className="bg-white rounded-xl shadow-lg p-6">
+                  <h3 className="text-xl font-bold text-blue-700 mb-6">{editingId ? "Edit Case" : "New Case Entry"}</h3>
+                  {stats.hasAlert && <div className="bg-red-100 border border-red-500 text-red-700 p-4 rounded mb-4 font-bold">Alert: Critical case detected!</div>}
+                  <form onSubmit={handleSubmit} className="space-y-4">
+                    <select value={caseType} onChange={e=>setCaseType(e.target.value)} className="w-full p-3 border rounded-lg">
+                      <option value="case_note">Case Note</option>
+                      <option value="school_report">School Report</option>
+                      <option value="medical_document">Medical Record</option>
+                    </select>
+                    <input required placeholder="Child's Full Name" value={childName} onChange={e=>setChildName(e.target.value)} className="w-full p-3 border rounded-lg" />
+                    <input required type="date" value={childDOB} onChange={e=>setChildDOB(e.target.value)} className="w-full p-3 border rounded-lg" />
+                    <select value={childGender} onChange={e=>setChildGender(e.target.value)} className="w-full p-3 border rounded-lg">
+                      <option value="male">Male</option>
+                      <option value="female">Female</option>
+                      <option value="other">Other</option>
+                    </select>
+                    <select value={region} onChange={e=>setRegion(e.target.value)} className="w-full p-3 border rounded-lg">
+                      <option value="Northern">Northern</option>
+                      <option value="Central">Central</option>
+                      <option value="Southern">Southern</option>
+                    </select>
+                    <select value={origin} onChange={e=>setOrigin(e.target.value)} className="w-full p-3 border rounded-lg">
+                      <option value="Rural">Rural</option>
+                      <option value="Urban">Urban</option>
+                    </select>
+                    <textarea required placeholder="Description of incident..." value={content} onChange={e=>setContent(e.target.value)} className="w-full p-3 border rounded-lg h-32 resize-none"></textarea>
+                    <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 font-bold text-lg">
+                      {editingId ? "Update" : "Submit & Analyze"}
+                    </button>
+                    {editingId && <button type="button" onClick={()=>{setEditingId(null); setChildName(""); setChildDOB(""); setContent("");}} className="w-full bg-gray-500 text-white py-3 rounded-lg hover:bg-gray-600">Cancel</button>}
+                  </form>
+                </div>
+
+                {/* Stats & Charts */}
+                <div className="bg-white rounded-xl shadow-lg p-6 space-y-6">
+                  <h3 className="text-xl font-bold text-blue-700">Overview Statistics</h3>
+                  <div className="grid grid-cols-2 gap-4 text-center">
+                    <div className="bg-gray-100 p-4 rounded-lg"><p className="text-3xl font-bold">{stats.total}</p><p>Total Cases</p></div>
+                    <div className="bg-red-100 p-4 rounded-lg"><p className="text-3xl font-bold text-red-600">{stats.critical}</p><p>Critical</p></div>
+                    <div className="bg-orange-100 p-4 rounded-lg"><p className="text-3xl font-bold text-orange-700">{stats.high}</p><p>High</p></div>
+                    <div className="bg-yellow-100 p-4 rounded-lg"><p className="text-3xl font-bold text-yellow-700">{stats.medium}</p><p>Medium</p></div>
+                    <div className="bg-green-100 p-4 rounded-lg"><p className="text-3xl font-bold text-green-600">{stats.low}</p><p>Low</p></div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-6">
+                    <div><canvas ref={chartRefs.gender}></canvas></div>
+                    <div><canvas ref={chartRefs.region}></canvas></div>
+                    <div><canvas ref={chartRefs.origin}></canvas></div>
+                    <div><canvas ref={chartRefs.trend}></canvas></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* CASE HISTORY - ONLY ADMIN & ORGANIZATION */}
+              {(user.role === "admin" || user.role === "organization") && (
+                <div className="max-w-7xl mx-auto p-6">
+                  <div className="bg-white rounded-xl shadow-lg p-6">
+                    <h3 className="text-xl font-bold text-blue-700 mb-6">Case History ({filteredAndSortedCases.length} cases)</h3>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3 mb-6">
+                      <input placeholder="Search name / content..." value={search} onChange={e=>setSearch(e.target.value)} className="px-4 py-2 border rounded-lg" />
+                      <select value={filterLevel} onChange={e=>setFilterLevel(e.target.value)} className="px-4 py-2 border rounded-lg">
+                        <option value="all">All Levels</option>
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="critical">Critical</option>
+                      </select>
+                      <select value={filterType} onChange={e=>setFilterType(e.target.value)} className="px-4 py-2 border rounded-lg">
+                        <option value="all">All Types</option>
+                        <option value="neglect">Neglect</option>
+                        <option value="abuse">Physical Abuse</option>
+                      </select>
+                      <select value={filterRegion} onChange={e=>setFilterRegion(e.target.value)} className="px-4 py-2 border rounded-lg">
+                        <option value="all">All Regions</option>
+                        <option value="Northern">Northern</option>
+                        <option value="Central">Central</option>
+                        <option value="Southern">Southern</option>
+                      </select>
+                      <select value={filterOrigin} onChange={e=>setFilterOrigin(e.target.value)} className="px-4 py-2 border rounded-lg">
+                        <option value="all">All Origins</option>
+                        <option value="Rural">Rural</option>
+                        <option value="Urban">Urban</option>
+                      </select>
+                      <div className="flex gap-1">
+                        <input type="number" min="0" placeholder="Min age" value={filterAgeMin} onChange={e=>setFilterAgeMin(e.target.value)} className="w-20 px-2 py-2 border rounded-lg" />
+                        <input type="number" min="0" placeholder="Max age" value={filterAgeMax} onChange={e=>setFilterAgeMax(e.target.value)} className="w-20 px-2 py-2 border rounded-lg" />
+                      </div>
+                      <button onClick={()=>{
+                        setSearch(""); setFilterLevel("all"); setFilterType("all"); setFilterRegion("all"); setFilterOrigin("all");
+                        setFilterAgeMin(""); setFilterAgeMax("");
+                      }} className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700">
+                        Clear All
+                      </button>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead className="bg-gray-200">
+                          <tr>
+                            <th className="p-3 cursor-pointer hover:bg-gray-300" onClick={()=>toggleSort("name")}>Child Name {sortColumn==="name" && (sortOrder==="asc" ? "Up" : "Down")}</th>
+                            <th className="p-3 cursor-pointer hover:bg-gray-300" onClick={()=>toggleSort("dob")}>DOB {sortColumn==="dob" && (sortOrder==="asc" ? "Up" : "Down")}</th>
+                            <th className="p-3 cursor-pointer hover:bg-gray-300" onClick={()=>toggleSort("age")}>Age {sortColumn==="age" && (sortOrder==="asc" ? "Up" : "Down")}</th>
+                            <th className="p-3 cursor-pointer hover:bg-gray-300" onClick={()=>toggleSort("level")}>Risk Level {sortColumn==="level" && (sortOrder==="asc" ? "Up" : "Down")}</th>
+                            <th className="p-3">Type</th>
+                            <th className="p-3">Region</th>
+                            <th className="p-3">Origin</th>
+                            <th className="p-3 cursor-pointer hover:bg-gray-300" onClick={()=>toggleSort("date")}>Date {sortColumn==="date" && (sortOrder==="asc" ? "Up" : "Down")}</th>
+                            <th className="p-3">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredAndSortedCases.length === 0 ? (
+                            <tr><td colSpan="9" className="p-8 text-center text-gray-500">No cases found</td></tr>
+                          ) : (
+                            filteredAndSortedCases.map(c => (
+                              <tr key={c.id} className="border-b hover:bg-gray-50">
+                                <td className="p-3 font-medium">{c.childName}</td>
+                                <td className="p-3">{formatDateUS(c.childDOB)}</td>
+                                <td className="p-3 text-center font-semibold">{c.childAge}</td>
+                                <td className={`p-3 font-bold ${c.prediction==="critical"?"text-red-600":c.prediction==="high"?"text-orange-600":c.prediction==="medium"?"text-yellow-600":"text-green-600"}`}>
+                                  {c.prediction.charAt(0).toUpperCase() + c.prediction.slice(1)}
+                                </td>
+                                <td className="p-3">{c.abuseType === "neglect" ? "Neglect" : c.abuseType === "abuse" ? "Physical Abuse" : "-"}</td>
+                                <td className="p-3">{c.region}</td>
+                                <td className="p-3">{c.origin}</td>
+                                <td className="p-3">{c.date}</td>
+                                <td className="p-3">
+                                  <button onClick={()=>handleEdit(c)} className="bg-blue-600 text-white px-3 py-1 rounded mr-2 text-sm">Edit</button>
+                                  <button onClick={()=>handleDelete(c.id)} className="bg-red-600 text-white px-3 py-1 rounded text-sm">Delete</button>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById("root"));
+  </script>
+</body>
+</html>
